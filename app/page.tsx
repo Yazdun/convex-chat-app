@@ -1,3 +1,7 @@
 export default function Home() {
-  return <div>hello</div>;
+  return (
+    <div className="h-screen flex items-center justify-center">
+      landing page goes here
+    </div>
+  );
 }
