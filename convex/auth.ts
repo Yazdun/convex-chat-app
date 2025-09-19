@@ -1,45 +1,145 @@
-import { createClient, type GenericCtx } from "@convex-dev/better-auth";
-import { convex } from "@convex-dev/better-auth/plugins";
 import { components } from "./_generated/api";
+import { query, QueryCtx } from "./_generated/server";
+import authSchema from "./betterAuth/schema";
+import { createClient, GenericCtx } from "@convex-dev/better-auth";
+import { convex } from "@convex-dev/better-auth/plugins";
+import {
+  anonymous,
+  genericOAuth,
+  twoFactor,
+  username,
+} from "better-auth/plugins";
+import { emailOTP } from "better-auth/plugins";
+import {
+  sendMagicLink,
+  sendOTPVerification,
+  sendEmailVerification,
+  sendResetPassword,
+} from "../convex/email";
+import { magicLink } from "better-auth/plugins";
+import { betterAuth, BetterAuthOptions } from "better-auth";
+import { requireMutationCtx } from "@convex-dev/better-auth/utils";
 import { DataModel } from "./_generated/dataModel";
-import { query } from "./_generated/server";
-import { betterAuth } from "better-auth";
 
-const siteUrl = process.env.SITE_URL!;
+// This implementation uses Local Install as it would be in a new project.
 
-// The component client has methods needed for integrating Convex with Better Auth,
-// as well as helper methods for general use.
-export const authComponent = createClient<DataModel>(components.betterAuth);
+const siteUrl = process.env.SITE_URL;
+
+export const authComponent = createClient<DataModel, typeof authSchema>(
+  components.betterAuth,
+  {
+    local: {
+      schema: authSchema,
+    },
+    verbose: false,
+  },
+);
 
 export const createAuth = (
   ctx: GenericCtx<DataModel>,
   { optionsOnly } = { optionsOnly: false },
-) => {
-  return betterAuth({
-    // disable logging when createAuth is called just to generate options.
-    // this is not required, but there's a lot of noise in logs without it.
+) =>
+  betterAuth({
+    baseURL: siteUrl,
     logger: {
       disabled: optionsOnly,
     },
-    baseURL: siteUrl,
     database: authComponent.adapter(ctx),
-    // Configure simple, non-verified email/password to get started
+    account: {
+      accountLinking: {
+        enabled: true,
+        allowDifferentEmails: true,
+      },
+    },
+    emailVerification: {
+      sendVerificationEmail: async ({ user, url }) => {
+        await sendEmailVerification(requireMutationCtx(ctx), {
+          to: user.email,
+          url,
+        });
+      },
+    },
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: false,
+      requireEmailVerification: true,
+      sendResetPassword: async ({ user, url }) => {
+        await sendResetPassword(requireMutationCtx(ctx), {
+          to: user.email,
+          url,
+        });
+      },
+    },
+    socialProviders: {
+      github: {
+        clientId: process.env.GITHUB_CLIENT_ID as string,
+        clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
+      },
+      google: {
+        clientId: process.env.GOOGLE_CLIENT_ID as string,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
+        accessType: "offline",
+        prompt: "select_account consent",
+      },
+    },
+    user: {
+      additionalFields: {
+        foo: {
+          type: "string",
+          required: false,
+        },
+      },
+      deleteUser: {
+        enabled: true,
+      },
     },
     plugins: [
-      // The Convex plugin is required for Convex compatibility
+      anonymous(),
+      username(),
+      magicLink({
+        sendMagicLink: async ({ email, url }) => {
+          await sendMagicLink(requireMutationCtx(ctx), {
+            to: email,
+            url,
+          });
+        },
+      }),
+      emailOTP({
+        async sendVerificationOTP({ email, otp }) {
+          await sendOTPVerification(requireMutationCtx(ctx), {
+            to: email,
+            code: otp,
+          });
+        },
+      }),
+      twoFactor(),
+      genericOAuth({
+        config: [
+          {
+            providerId: "slack",
+            clientId: process.env.SLACK_CLIENT_ID as string,
+            clientSecret: process.env.SLACK_CLIENT_SECRET as string,
+            discoveryUrl: "https://slack.com/.well-known/openid-configuration",
+            scopes: ["openid", "email", "profile"],
+          },
+        ],
+      }),
       convex(),
     ],
-  });
+  } satisfies BetterAuthOptions);
+
+// Below are example helpers and functions for getting the current user
+// Feel free to edit, omit, etc.
+export const safeGetUser = async (ctx: QueryCtx) => {
+  return authComponent.safeGetAuthUser(ctx);
 };
 
-// Example function for getting the current user
-// Feel free to edit, omit, etc.
+export const getUser = async (ctx: QueryCtx) => {
+  return authComponent.getAuthUser(ctx);
+};
+
 export const getCurrentUser = query({
   args: {},
   handler: async (ctx) => {
-    return authComponent.getAuthUser(ctx);
+    return safeGetUser(ctx);
   },
 });
